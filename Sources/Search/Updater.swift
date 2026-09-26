@@ -46,6 +46,13 @@ final class Updater: ObservableObject {
         Store.testing && ProcessInfo.processInfo.environment["SEARCH_FEED"] != nil
     }
 
+    /// Whether this build checks the feed at all. A personal fork does not
+    /// follow Office Commun's feed: nothing checks it, so an upstream
+    /// release is never offered over — or swapped under — a build of one's
+    /// own. Only a test run pointed at a feed of its own ever checks, which
+    /// keeps every path here exercised all the same.
+    static var checksForUpdates: Bool { overridden }
+
     struct Release: Equatable {
         let version: String
         let build: Int
@@ -138,8 +145,9 @@ final class Updater: ObservableObject {
     private var clock: Timer?
 
     private func checkIfDue() {
+        guard Updater.checksForUpdates else { return }
         let last = Store.settings.object(forKey: lastKey) as? Date ?? .distantPast
-        guard Updater.overridden || Date().timeIntervalSince(last) > 60 * 60 * 20 else { return }
+        guard Date().timeIntervalSince(last) > 60 * 60 * 20 else { return }
         check { _ in }
     }
 
@@ -147,6 +155,7 @@ final class Updater: ObservableObject {
     /// names, or nil when this is the latest; what becomes of it after that
     /// is said through the line handed to `checkIfDue`.
     func check(then done: @escaping (Release?) -> Void) {
+        guard Updater.checksForUpdates else { done(nil); return }
         guard !checking else { return }
         checking = true
         Task { [weak self] in

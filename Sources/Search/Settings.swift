@@ -435,9 +435,11 @@ struct SettingsPanel: View {
 
             Card {
                 Line(versionTitle, versionDetail) { versionControl }
-                Rule()
-                Line("Install updates on its own", "Off, Search still looks once a day and tells you, and installs only when you press Install") {
-                    Switch(on: $prefs.installsUpdates)
+                if Updater.checksForUpdates {
+                    Rule()
+                    Line("Install updates on its own", "Off, Search still looks once a day and tells you, and installs only when you press Install") {
+                        Switch(on: $prefs.installsUpdates)
+                    }
                 }
                 Rule()
                 Line("Found something wrong?", "Opens a draft with the version already in it") {
@@ -485,6 +487,9 @@ struct SettingsPanel: View {
     private var versionDetail: String {
         switch updater.stage {
         case .none:
+            guard Updater.checksForUpdates else {
+                return "This build follows no feed — update it by rebuilding, as a fork"
+            }
             return updater.lastChecked.map { "Checked \($0.formatted(.relative(presentation: .named))) — once a day on its own" }
                 ?? "Checked once a day on its own"
         case .fetching(let next):
@@ -502,12 +507,14 @@ struct SettingsPanel: View {
     private var versionControl: some View {
         switch updater.stage {
         case .none:
-            Pill(updater.checking ? "Checking…" : "Check now") {
-                updater.check { found in
-                    if found == nil { browser.announce("This is the latest one") }
+            if Updater.checksForUpdates {
+                Pill(updater.checking ? "Checking…" : "Check now") {
+                    updater.check { found in
+                        if found == nil { browser.announce("This is the latest one") }
+                    }
                 }
+                .disabled(updater.checking)
             }
-            .disabled(updater.checking)
         case .fetching:
             Ring(size: 12)
         case .ready:
