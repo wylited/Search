@@ -59,6 +59,10 @@ final class Preferences: ObservableObject {
     @Published var sideWidth: CGFloat {
         didSet { store.set(Double(sideWidth), forKey: "sidebar.width") }
     }
+    /// The column on the right rather than the left.
+    @Published var sideOnRight: Bool {
+        didSet { store.set(sideOnRight, forKey: "sidebar.right") }
+    }
     @Published var glyph: Glyph {
         didSet { store.set(glyph.rawValue, forKey: "glyph") }
     }
@@ -232,6 +236,7 @@ final class Preferences: ObservableObject {
         sideHides = store.bool(forKey: "sidebar.hides")
         let width = store.object(forKey: "sidebar.width") as? Double ?? Double(Metrics.side)
         sideWidth = min(Metrics.sideMax, max(Metrics.sideMin, CGFloat(width)))
+        sideOnRight = store.bool(forKey: "sidebar.right")
         glyph = store.string(forKey: "glyph").flatMap(Glyph.init) ?? .letters
         engine = store.string(forKey: "search.engine").flatMap(Engine.init) ?? .standard
         customEngine = store.string(forKey: "search.custom") ?? ""

@@ -311,10 +311,10 @@ struct SpaceDot: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(hovering ? Palette.ink : Palette.muted)
                     .id(shown?.key ?? key)
-                    // The way the tabs go: sideways in the column; in the bar
-                    // across the top, up for the next space, down going back.
+                    // The way the tabs go: sideways in the column, up and down
+                    // in the bar across the top.
                     .transition(.push(from: browser.prefs.sidebar
-                        ? (browser.spaceStep > 0 ? .trailing : .leading)
+                        ? (browser.spaceStep > 0 ? (browser.prefs.sideOnRight ? .leading : .trailing) : (browser.prefs.sideOnRight ? .trailing : .leading))
                         : (browser.spaceStep > 0 ? .bottom : .top)))
             }
             .frame(width: SpaceDot.width, height: 26)

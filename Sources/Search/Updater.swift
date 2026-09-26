@@ -46,11 +46,7 @@ final class Updater: ObservableObject {
         Store.testing && ProcessInfo.processInfo.environment["SEARCH_FEED"] != nil
     }
 
-    /// Whether this build checks the feed at all. A personal fork does not
-    /// follow Office Commun's feed: nothing checks it, so an upstream
-    /// release is never offered over — or swapped under — a build of one's
-    /// own. Only a test run pointed at a feed of its own ever checks, which
-    /// keeps every path here exercised all the same.
+    /// Fork: only a test run with its own feed (SEARCH_FEED) ever checks.
     static var checksForUpdates: Bool { overridden }
 
     struct Release: Equatable {

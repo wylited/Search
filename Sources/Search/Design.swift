@@ -26,17 +26,22 @@ enum Palette {
     /// The same colours for the AppKit corners of the app — a text field's
     /// ink, a window's background — which want an NSColor and keep it.
     enum NS {
-        static let ground = pair(1.0, 0.11)
-        static let ink = pair(0.09, 0.93)
-        static let muted = pair(0.55, 0.58)
-        static let faint = pair(0.83, 0.32)
-        static let hairline = pair(0.91, 0.20)
-        static let wash = pair(0.937, 0.175)
-        static let hover = pair(0.965, 0.15)
+        static let ground = pair(1.0, 0.11, ayuLight: (0.980, 0.980, 0.980))   // #FAFAFA
+        static let ink = pair(0.09, 0.93, ayuLight: (0.227, 0.243, 0.267))     // #3A3E44
+        static let muted = pair(0.55, 0.58, ayuLight: (0.424, 0.451, 0.486))   // #6C737C
+        static let faint = pair(0.83, 0.32, ayuLight: (0.604, 0.627, 0.663))   // #9AA0A9
+        static let hairline = pair(0.91, 0.20, ayuLight: (0.859, 0.875, 0.894)) // #DBDFE4
+        static let wash = pair(0.937, 0.175, ayuLight: (0.894, 0.906, 0.922))  // #E4E7EB
+        static let hover = pair(0.965, 0.15, ayuLight: (0.929, 0.937, 0.949))  // #EDEFF2
         /// The resting traffic lights, drawn by hand when the app is behind.
-        static let resting = pair(0.80, 0.30)
+        static let resting = pair(0.80, 0.30, ayuLight: (0.788, 0.804, 0.824)) // #C9CDD2
         static let safe = tint(light: (0.08, 0.50, 0.24), dark: (0.29, 0.87, 0.50))
         static let unsafe = tint(light: (0.71, 0.33, 0.04), dark: (0.98, 0.75, 0.14))
+
+        /// Read at resolve time, so the switch in Settings flips the palette live.
+        private static var ayuOn: Bool {
+            Store.settings.string(forKey: "look") == Look.ayu.rawValue
+        }
 
         private static func tint(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
             NSColor(name: nil) { appearance in
@@ -45,9 +50,12 @@ enum Palette {
             }
         }
 
-        private static func pair(_ light: CGFloat, _ dark: CGFloat) -> NSColor {
+        private static func pair(_ light: CGFloat, _ dark: CGFloat, ayuLight: (CGFloat, CGFloat, CGFloat)? = nil) -> NSColor {
             NSColor(name: nil) { appearance in
                 let dim = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                if !dim, ayuOn, let ayuLight {
+                    return NSColor(srgbRed: ayuLight.0, green: ayuLight.1, blue: ayuLight.2, alpha: 1)
+                }
                 return NSColor(white: dim ? dark : light, alpha: 1)
             }
         }
@@ -55,14 +63,16 @@ enum Palette {
 }
 
 /// Light, dark, or the Mac's own — the one choice that colours everything.
+/// Ayu Light is the fork's own: Search's layout with ayu's palette.
 enum Look: String, CaseIterable, Identifiable {
-    case light, dark, system
+    case light, ayu, dark, system
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .light: return "Light"
+        case .ayu: return "Ayu Light"
         case .dark: return "Dark"
         case .system: return "System"
         }
@@ -72,11 +82,15 @@ enum Look: String, CaseIterable, Identifiable {
     /// follows the Mac, and changes with it.
     var appearance: NSAppearance? {
         switch self {
-        case .light: return NSAppearance(named: .aqua)
+        case .light, .ayu: return NSAppearance(named: .aqua)
         case .dark: return NSAppearance(named: .darkAqua)
         case .system: return nil
         }
     }
+
+    /// The look in force, so a re-assignment is a no-op rather than a
+    /// pointless flash.
+    private static var applied: Look?
 
     /// Set on the app rather than on the window, so every panel, alert and
     /// sheet — and every page, which follows the window it is in — agrees.
@@ -87,10 +101,23 @@ enum Look: String, CaseIterable, Identifiable {
     /// how a window ends up with a layer that takes clicks and shows
     /// nothing. The next turn of the run loop is soon enough.
     func apply() {
+        guard Look.applied != self else { return }
+        Look.applied = self
         let wanted = appearance
         DispatchQueue.main.async {
-            guard NSApp.appearance !== wanted, NSApp.appearance?.name != wanted?.name else { return }
-            NSApp.appearance = wanted
+            let before = NSApp.effectiveAppearance.name
+            if NSApp.appearance !== wanted, NSApp.appearance?.name != wanted?.name {
+                NSApp.appearance = wanted
+            }
+            // The colours are dynamic providers, and they only re-resolve
+            // when the effective appearance changes — which it doesn't
+            // between two light looks on a light Mac. So a switch the
+            // palette can see but the appearance can't passes through the
+            // other one for a tick.
+            if wanted != nil, NSApp.effectiveAppearance.name == before {
+                NSApp.appearance = NSAppearance(named: before == .aqua ? .darkAqua : .aqua)
+                DispatchQueue.main.async { NSApp.appearance = wanted }
+            }
         }
     }
 }

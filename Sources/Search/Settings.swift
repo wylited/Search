@@ -269,6 +269,10 @@ struct SettingsPanel: View {
                 Line("Hide the sidebar until the pointer reaches the edge", "The page takes the whole window; push against its left edge for the tabs. ⌘S keeps them out.") {
                     Switch(on: $prefs.sideHides)
                 }
+                Rule()
+                Line("Put the sidebar on the right", "The page keeps the lights at the window's own corner, over a thin band; push against the right edge for the tabs") {
+                    Switch(on: $prefs.sideOnRight)
+                }
             }
             Rule()
             Line("Tabs show", "Beside the title, and on a pinned square") {

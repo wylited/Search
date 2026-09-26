@@ -73,7 +73,7 @@ struct Fold: View {
     private static let dwell: TimeInterval = 0.15
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: prefs.sideOnRight ? .topTrailing : .topLeading) {
             // In the column's mode the page reaches the window's top edge —
             // beside the column, and everywhere once it is folded away — and
             // there was nowhere there to drag the window from, or to
@@ -99,17 +99,18 @@ struct Fold: View {
                     }
                     .transition(.move(edge: .top))
             }
-            ZStack(alignment: .leading) {
+            ZStack(alignment: prefs.sideOnRight ? .trailing : .leading) {
                 Color.clear.frame(width: 0)
                 if folding, prefs.sidebar, browser.peeking {
                     SideBar(browser: browser, prefs: prefs)
-                        .shadow(color: .black.opacity(0.14), radius: 20, x: 4)
-                        .transition(.move(edge: .leading))
+                        .shadow(color: .black.opacity(0.14), radius: 20, x: prefs.sideOnRight ? -4 : 4)
+                        .transition(.move(edge: prefs.sideOnRight ? .trailing : .leading))
                 }
             }
             .frame(maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: prefs.sideOnRight ? .topTrailing : .topLeading)
         .ignoresSafeArea()
         .onAppear {
             hideLights()
@@ -174,8 +175,13 @@ struct Fold: View {
         let point = window.convertPoint(fromScreen: screen)
         let size = window.frame.size
         let inWindow = point.x >= 0 && point.x < size.width && point.y >= 0 && point.y < size.height
-        // Distance from the left edge for the column, from the top for the strip.
-        let distance = prefs.sidebar ? point.x : size.height - point.y
+        // Distance from the column's edge — left or right — or the top for the strip.
+        let distance: CGFloat
+        if prefs.sidebar {
+            distance = prefs.sideOnRight ? size.width - point.x : point.x
+        } else {
+            distance = size.height - point.y
+        }
         if browser.peeking {
             pass()
             // Only this window counts, not another app's window over it. One
@@ -248,7 +254,8 @@ struct Fold: View {
     private func hideLights() {
         guard let bar = Fold.titlebar else { return }
         if prefs.sidebar {
-            Fold.slide(bar, off: lightsOff, by: prefs.sideWidth)
+            // On the right the column never carries the lights; they leave by their own width.
+            Fold.slide(bar, off: lightsOff, by: prefs.sideOnRight ? Lights.centre.x * 3 : prefs.sideWidth)
         } else {
             Fold.slide(bar, off: lightsOff, by: Metrics.strip, up: true)
         }

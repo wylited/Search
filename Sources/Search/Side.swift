@@ -44,12 +44,21 @@ struct SideBar: View {
             // everywhere but over the three doors, which take their own
             // clicks. The lights are the title bar's own and answer first.
             HStack(spacing: 0) {
-                DragStrip()
-                    .frame(width: 10 + Metrics.sideLights)
-                Color.clear
-                    .frame(width: Metrics.helm)
-                    .allowsHitTesting(false)
-                DragStrip()
+                if prefs.sideOnRight {
+                    DragStrip()
+                    Color.clear
+                        .frame(width: Metrics.helm)
+                        .allowsHitTesting(false)
+                    DragStrip()
+                        .frame(width: 10)
+                } else {
+                    DragStrip()
+                        .frame(width: 10 + Metrics.sideLights)
+                    Color.clear
+                        .frame(width: Metrics.helm)
+                        .allowsHitTesting(false)
+                    DragStrip()
+                }
             }
             .frame(height: Metrics.strip)
 
@@ -57,11 +66,17 @@ struct SideBar: View {
                 // The traffic lights' corner, with back, forward and reload
                 // sitting right of them — the same three doors as the top
                 // bar, moved beside the lights since there's no far end of a
-                // row to put them at in this mode.
+                // row to put them at in this mode. On the right the doors sit
+                // at the column's own far corner, the lights being over the page.
                 HStack(spacing: 0) {
-                    Color.clear.frame(width: Metrics.sideLights)
-                    Helm(browser: browser)
-                    Spacer(minLength: 0)
+                    if prefs.sideOnRight {
+                        Spacer(minLength: 0)
+                        Helm(browser: browser)
+                    } else {
+                        Color.clear.frame(width: Metrics.sideLights)
+                        Helm(browser: browser)
+                        Spacer(minLength: 0)
+                    }
                 }
                 .frame(height: Metrics.strip)
 
@@ -87,10 +102,10 @@ struct SideBar: View {
         .clipped()
         .onAppear { SpaceSwipe.shared.start(for: browser) }
         .background(landing ? Palette.hover : Palette.ground)
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: prefs.sideOnRight ? .leading : .trailing) {
             Rectangle().fill(Palette.hairline).frame(width: 1)
         }
-        .overlay(alignment: .trailing) { edge }
+        .overlay(alignment: prefs.sideOnRight ? .leading : .trailing) { edge }
         .onDrop(of: [.url, .text], isTargeted: $landing) { providers in
             browser.take(providers)
         }
@@ -118,7 +133,8 @@ struct SideBar: View {
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
                         if grabbed == nil { grabbed = prefs.sideWidth }
-                        let wanted = (grabbed ?? prefs.sideWidth) + value.translation.width
+                        let wanted = (grabbed ?? prefs.sideWidth)
+                            + (prefs.sideOnRight ? -value.translation.width : value.translation.width)
                         prefs.sideWidth = min(Metrics.sideMax, max(Metrics.sideMin, wanted))
                     }
                     .onEnded { _ in grabbed = nil }
