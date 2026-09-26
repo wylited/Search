@@ -56,6 +56,22 @@ struct HistoryPanel: View {
 
                 if traces.isEmpty {
                     Card { Nothing(browser.recallHunt.isEmpty ? "Nothing yet." : "Nothing matches.") }
+                    if browser.recallHunt.isEmpty {
+                        Card {
+                            HStack(spacing: 8) {
+                                Text("Bring in from")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Palette.muted)
+                                ForEach(Firefox.installed()) { source in
+                                    Pill(source.name) {
+                                        browser.importFirefox(from: source) { browser.announce($0.line) }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                        }
+                    }
                 } else {
                     // Lazy: only the lines in view are made. Two thousand of
                     // them, each with its icon, took the panel a third of a

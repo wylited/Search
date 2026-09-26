@@ -495,6 +495,9 @@ struct BookmarksPanel: View {
                 ForEach(Chromium.installed()) { source in
                     Pill(source.name) { browser.takeBookmarks(from: source) }
                 }
+                ForEach(Firefox.installed()) { source in
+                    Pill(source.name) { browser.takeBookmarks(from: source) { _ in } }
+                }
                 Spacer()
                 Text(bookmarks.count == 1 ? "1 bookmark" : "\(bookmarks.count) bookmarks")
                     .font(.system(size: 12))
