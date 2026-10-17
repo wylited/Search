@@ -79,6 +79,14 @@ struct SideBar: View {
                 }
                 .frame(height: Metrics.strip)
 
+                // Where the tab list can see it: this tab's address, and how
+                // big the page sits. A click types in the omnibox, as ⌘L does.
+                if let tab = browser.active {
+                    AddressLine(browser: browser, tab: tab)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+                }
+
                 // The spaces side by side, as pages: two fingers sideways move
                 // the one on screen and the next one together, the next one
                 // coming in as this one goes, with nothing between them.
@@ -1054,5 +1062,40 @@ struct PinCarried: ViewModifier {
         let point = CGPoint(x: start.midX + travel.width, y: start.midY + travel.height)
         func distance(_ cell: CGRect) -> CGFloat { hypot(cell.midX - point.x, cell.midY - point.y) }
         return cells.indices.min { distance(cells[$0]) < distance(cells[$1]) } ?? from
+    }
+}
+
+/// The line above the tab list: where this tab is, and how big the page
+/// sits. A click hands typing to the omnibox, as ⌘L would; a click on the
+/// percentage puts the page back to its usual size.
+private struct AddressLine: View {
+    let browser: Browser
+    @ObservedObject var tab: Tab
+    @Environment(\.greys) private var greys
+
+    private var label: String {
+        guard let address = tab.address else { return "New tab" }
+        return Address.withoutWWW(address.absoluteString)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(tab.address == nil ? Palette.faint : Palette.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            Text("\(Int((tab.zoom * 100).rounded()))%")
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(abs(tab.zoom - 1) < 0.01 ? Palette.faint : Palette.muted)
+                .onTapGesture { browser.resetZoom() }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(greys.tile))
+        .contentShape(Rectangle())
+        .onTapGesture { browser.edit() }
     }
 }
