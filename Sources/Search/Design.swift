@@ -17,7 +17,23 @@ enum Palette {
     static let faint = Color(nsColor: NS.faint)         // neutral-300 · neutral-700
     static let hairline = Color(nsColor: NS.hairline)   // neutral-200 · neutral-800
     static let wash = Color(nsColor: NS.wash)           // the live tab
+    /// The live pin: among squares that already wear a faint grey, the one
+    /// you are on stands out from them as a live row does from the white.
+    static let pinLive = Color(nsColor: NS.pinLive)
     static let hover = Color(nsColor: NS.hover)         // the one under the pointer
+    /// Around the page's card, with the tabs down the side: the column, the
+    /// bookmarks bar and the gaps share it, a touch off the page's white, so
+    /// the card reads as one (see CardEdge).
+    static let frame = Color(nsColor: NS.frame)
+    /// The column's own greys, on that ground: the live tab, the one under the
+    /// pointer, the resting pin squares and the live pin. The white column's
+    /// wash, hover and pinLive all but vanished on it (Drice: the pins' squares
+    /// and the open tab no longer showed), so these keep the same steps of
+    /// contrast from the frame that those kept from the white.
+    static let sideWash = Color(nsColor: NS.sideWash)
+    static let sideHover = Color(nsColor: NS.sideHover)
+    static let sideTile = Color(nsColor: NS.sideTile)
+    static let sidePinLive = Color(nsColor: NS.sidePinLive)
     /// The only two that aren't grey: a connection nobody can read on the
     /// way, and one anybody can (see SiteCard.swift).
     static let safe = Color(nsColor: NS.safe)           // green-700 · green-400
@@ -26,21 +42,50 @@ enum Palette {
     /// The same colours for the AppKit corners of the app — a text field's
     /// ink, a window's background — which want an NSColor and keep it.
     enum NS {
-        static let ground = pair(1.0, 0.11, ayuLight: (0.980, 0.980, 0.980))   // #FAFAFA
-        static let ink = pair(0.09, 0.93, ayuLight: (0.227, 0.243, 0.267))     // #3A3E44
-        static let muted = pair(0.55, 0.58, ayuLight: (0.424, 0.451, 0.486))   // #6C737C
-        static let faint = pair(0.83, 0.32, ayuLight: (0.604, 0.627, 0.663))   // #9AA0A9
-        static let hairline = pair(0.91, 0.20, ayuLight: (0.859, 0.875, 0.894)) // #DBDFE4
-        static let wash = pair(0.937, 0.175, ayuLight: (0.894, 0.906, 0.922))  // #E4E7EB
-        static let hover = pair(0.965, 0.15, ayuLight: (0.929, 0.937, 0.949))  // #EDEFF2
+        //        search  ayu: light, mirage, dark
+        static let ground = pair(1.0, 0.11, ayu: Ayu(0xFAFAFA, 0x1F2430, 0x0B0E14))
+        static let ink = pair(0.09, 0.93, ayu: Ayu(0x3A3E44, 0xD9DAD3, 0xD1D0C9))
+        static let muted = pair(0.55, 0.58, ayu: Ayu(0x6C737C, 0x8A94A5, 0x828896))
+        static let faint = pair(0.83, 0.32, ayu: Ayu(0x9AA0A9, 0x5C6773, 0x565D6D))
+        static let hairline = pair(0.91, 0.20, ayu: Ayu(0xDBDFE4, 0x2E3545, 0x1B2130))
+        static let wash = pair(0.937, 0.175, ayu: Ayu(0xE4E7EB, 0x262E3B, 0x121722))
+        static let pinLive = pair(0.90, 0.21, ayu: Ayu(0xD5D8DC, 0x3A4354, 0x2A3040))
+        static let hover = pair(0.965, 0.15, ayu: Ayu(0xEDEFF2, 0x2C3442, 0x161C29))
+        static let frame = pair(0.955, 0.075, ayu: Ayu(0xE8EAED, 0x232A37, 0x0F141D))
+        static let sideWash = pair(0.895, 0.155, ayu: Ayu(0xDCE0E5, 0x252C3A, 0x111623))
+        static let sideHover = pair(0.915, 0.13, ayu: Ayu(0xE3E6EA, 0x2B3341, 0x171E2B))
+        static let sideTile = pair(0.925, 0.115, ayu: Ayu(0xE0E3E8, 0x28303E, 0x141A26))
+        static let sidePinLive = pair(0.86, 0.19, ayu: Ayu(0xCDD1D6, 0x394253, 0x2C3345))
         /// The resting traffic lights, drawn by hand when the app is behind.
-        static let resting = pair(0.80, 0.30, ayuLight: (0.788, 0.804, 0.824)) // #C9CDD2
+        static let resting = pair(0.80, 0.30, ayu: Ayu(0xC9CDD2, 0x4E5566, 0x464C5A))
         static let safe = tint(light: (0.08, 0.50, 0.24), dark: (0.29, 0.87, 0.50))
         static let unsafe = tint(light: (0.71, 0.33, 0.04), dark: (0.98, 0.75, 0.14))
 
-        /// Read at resolve time, so the switch in Settings flips the palette live.
-        private static var ayuOn: Bool {
-            Store.settings.string(forKey: "look") == Look.ayu.rawValue
+        /// One colour of ayu's three looks — light, mirage, dark — as 0xRRGGBB.
+        private struct Ayu {
+            let light: (CGFloat, CGFloat, CGFloat)
+            let mirage: (CGFloat, CGFloat, CGFloat)
+            let dark: (CGFloat, CGFloat, CGFloat)
+
+            init(_ light: Int, _ mirage: Int, _ dark: Int) {
+                func srgb(_ hex: Int) -> (CGFloat, CGFloat, CGFloat) {
+                    (CGFloat((hex >> 16) & 255) / 255, CGFloat((hex >> 8) & 255) / 255, CGFloat(hex & 255) / 255)
+                }
+                self.light = srgb(light)
+                self.mirage = srgb(mirage)
+                self.dark = srgb(dark)
+            }
+        }
+
+        /// The ayu triple in force, if the look is one of ayu's own and the
+        /// resolved appearance agrees with it.
+        private static func chosen(_ dim: Bool, _ ayu: Ayu) -> (CGFloat, CGFloat, CGFloat)? {
+            switch Store.settings.string(forKey: "look") {
+            case Look.ayu.rawValue: return dim ? nil : ayu.light
+            case Look.mirage.rawValue: return dim ? ayu.mirage : nil
+            case Look.ayuDark.rawValue: return dim ? ayu.dark : nil
+            default: return nil
+            }
         }
 
         private static func tint(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> NSColor {
@@ -50,11 +95,11 @@ enum Palette {
             }
         }
 
-        private static func pair(_ light: CGFloat, _ dark: CGFloat, ayuLight: (CGFloat, CGFloat, CGFloat)? = nil) -> NSColor {
+        private static func pair(_ light: CGFloat, _ dark: CGFloat, ayu: Ayu? = nil) -> NSColor {
             NSColor(name: nil) { appearance in
                 let dim = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                if !dim, ayuOn, let ayuLight {
-                    return NSColor(srgbRed: ayuLight.0, green: ayuLight.1, blue: ayuLight.2, alpha: 1)
+                if let ayu, let chosen = chosen(dim, ayu) {
+                    return NSColor(srgbRed: chosen.0, green: chosen.1, blue: chosen.2, alpha: 1)
                 }
                 return NSColor(white: dim ? dark : light, alpha: 1)
             }
@@ -62,10 +107,39 @@ enum Palette {
     }
 }
 
+/// The greys of the column's rows, pins and buttons, for the ground they lie
+/// on: the white's (the strip, a panel, the column with the page edge to
+/// edge) or the window's beside the page's card, set by the column for
+/// what is in it (see SideBar.onFrame). Read through the environment, so a
+/// row, a pin or a door is the same view on either ground.
+struct Greys {
+    let wash: Color
+    let hover: Color
+    let tile: Color
+    let pinLive: Color
+
+    static let white = Greys(wash: Palette.wash, hover: Palette.hover,
+                             tile: Palette.wash.opacity(0.55), pinLive: Palette.pinLive)
+    static let frame = Greys(wash: Palette.sideWash, hover: Palette.sideHover,
+                             tile: Palette.sideTile, pinLive: Palette.sidePinLive)
+}
+
+private struct GreysKey: EnvironmentKey {
+    static let defaultValue = Greys.white
+}
+
+extension EnvironmentValues {
+    var greys: Greys {
+        get { self[GreysKey.self] }
+        set { self[GreysKey.self] = newValue }
+    }
+}
+
 /// Light, dark, or the Mac's own — the one choice that colours everything.
-/// Ayu Light is the fork's own: Search's layout with ayu's palette.
+/// Ayu Light, Mirage and Dark are the fork's own: Search's layout with
+/// ayu's palettes.
 enum Look: String, CaseIterable, Identifiable {
-    case light, ayu, dark, system
+    case light, ayu, mirage, ayuDark, dark, system
 
     var id: String { rawValue }
 
@@ -73,6 +147,8 @@ enum Look: String, CaseIterable, Identifiable {
         switch self {
         case .light: return "Light"
         case .ayu: return "Ayu Light"
+        case .mirage: return "Ayu Mirage"
+        case .ayuDark: return "Ayu Dark"
         case .dark: return "Dark"
         case .system: return "System"
         }
@@ -83,7 +159,7 @@ enum Look: String, CaseIterable, Identifiable {
     var appearance: NSAppearance? {
         switch self {
         case .light, .ayu: return NSAppearance(named: .aqua)
-        case .dark: return NSAppearance(named: .darkAqua)
+        case .mirage, .ayuDark, .dark: return NSAppearance(named: .darkAqua)
         case .system: return nil
         }
     }
@@ -128,6 +204,11 @@ enum Metrics {
     /// to breathe just leaves it sitting below three buttons it used to line
     /// up with.
     static let strip: CGFloat = 52
+    /// With the tabs down the side the page is a card: this far from the
+    /// window's edges (and from the column, folded away), and its corners
+    /// this round.
+    static let cardGap: CGFloat = 8
+    static let cardRadius: CGFloat = 10
     /// Where the first tab starts. The traffic lights run from 19 to 79 —
     /// measured, not guessed — so this leaves them the same air on their right
     /// that the window gives them on their left.
@@ -170,10 +251,42 @@ enum Metrics {
 // One spring for anything that moves between two places, one for anything that
 // arrives or leaves. Using the same two everywhere is most of why a thing feels
 // like a single piece of software rather than a pile of views.
+// When macOS Reduce Motion is on in System Settings, transitions become
+// immediate so the interface does not jump or slide.
 enum Motion {
-    static let glide = Animation.spring(response: 0.34, dampingFraction: 0.82)
-    static let settle = Animation.spring(response: 0.30, dampingFraction: 0.86)
-    static let quick = Animation.easeOut(duration: 0.14)
+    /// Whether interface transitions should be immediate, following the
+    /// Mac's own accessibility setting.
+    static var reduced: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    static var glide: Animation? {
+        reduced ? nil : .spring(response: 0.34, dampingFraction: 0.82)
+    }
+
+    static var settle: Animation? {
+        reduced ? nil : .spring(response: 0.30, dampingFraction: 0.86)
+    }
+
+    static var quick: Animation? {
+        reduced ? nil : .easeOut(duration: 0.14)
+    }
+
+    /// The folded column or strip coming out over the page, and going back.
+    /// On glide it was slow both ways, next to Arc and Dia timed frame by
+    /// frame on the same Mac: each slides its sidebar 90% of the way out in
+    /// about 95ms and back in about 70ms, where glide took over 200ms. These
+    /// match them. Going in is damped all the way, since nothing is arriving
+    /// to settle. Fold.slide moves the window's buttons on the same numbers,
+    /// in Core Animation's terms.
+    static func fold(out: Bool) -> (response: Double, damping: Double) {
+        out ? (0.14, 0.86) : (0.13, 1)
+    }
+
+    static func folding(out: Bool) -> Animation? {
+        let spring = fold(out: out)
+        return reduced ? nil : .spring(response: spring.response, dampingFraction: spring.damping)
+    }
 }
 
 /// Search's mark — Drice's Subtract.svg, a pill with an S cut out of it,
@@ -264,11 +377,97 @@ struct Shake: GeometryEffect {
     }
 
     func effectValue(size: CGSize) -> ProjectionTransform {
+        guard !Motion.reduced else { return ProjectionTransform(.identity) }
         // Three there-and-backs, tapering to nothing, so it settles rather than
         // stopping mid-swing.
         let decay = 1 - travel
         return ProjectionTransform(
             CGAffineTransform(translationX: sin(travel * .pi * 6) * 7 * decay, y: 0)
         )
+    }
+}
+
+extension View {
+    /// What a popover holds, on the ground colour. From macOS 26 a popover
+    /// clips what it holds to its own rounded glass; before, an opaque
+    /// background was drawn out to the content's square edges, past the
+    /// popover's rounded corners (macOS 15, by email). There the popover is
+    /// handed the colour and fills its own shape with it, arrow included.
+    /// `card`: drawn as its own rounded card, with an edge, on macOS 26.
+    func popoverGround(card: Bool = false) -> some View {
+        modifier(PopoverGround(card: card))
+    }
+}
+
+private struct PopoverGround: ViewModifier {
+    let card: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            if card {
+                content
+                    .background(Palette.ground)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+            } else {
+                content.background(Palette.ground)
+            }
+        } else {
+            content.presentationBackground(Palette.ground)
+        }
+    }
+}
+
+/// The page as a card in the window, with the tabs down the side: round
+/// corners, a hairline edge and a soft shadow under it. The shadow is drawn
+/// by a shape behind the page, never by the page's own layers, which would
+/// make WebKit's drawing go through it; the page's view is rounded by its own
+/// layer as well (see StageView), since a web view is AppKit's and a clip of
+/// SwiftUI's is not always carried down to it. Two pages side by side are a
+/// card each, drawn by the stage that holds them (see PaneStage).
+struct CardEdge: ViewModifier {
+    let on: Bool
+
+    // One shape of view, on or off: a page whose view were rebuilt as the
+    // card comes and goes (the tabs across the top, a video taking the
+    // screen) would be handed to a new stage just as WebKit takes it to its
+    // full screen window. Off, the clip reaches far past the page and cuts
+    // nothing, and the edge and shadow are clear.
+    func body(content: Content) -> some View {
+        content
+            .clipShape(CardShape(on: on))
+            .background {
+                CardShape(on: on)
+                    .fill(on ? Palette.ground : .clear)
+                    .shadow(color: .black.opacity(on ? CardEdge.shadow : 0), radius: 6, y: 1)
+            }
+            .overlay {
+                CardShape(on: on)
+                    .strokeBorder(Color.primary.opacity(on ? CardEdge.edge : 0), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+    }
+
+    /// How dark the shadow and the edge are, for the stage's own cards too.
+    static let shadow: Double = 0.07
+    static let edge: Double = 0.08
+}
+
+/// The card's outline: round at its corners, or, off, a rectangle reaching
+/// far past the page on every side.
+private struct CardShape: InsettableShape {
+    let on: Bool
+    var inset: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        guard on else { return Path(rect.insetBy(dx: -10_000, dy: -10_000)) }
+        return RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
+            .path(in: rect.insetBy(dx: inset, dy: inset))
+    }
+
+    func inset(by amount: CGFloat) -> CardShape {
+        var shape = self
+        shape.inset += amount
+        return shape
     }
 }

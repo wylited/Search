@@ -15,7 +15,7 @@ struct WelcomePanel: View {
     // finding them looks through each browser's folders, and as an initial
     // value that ran every time the panel was made, the first window's
     // included, for a page that isn't showing yet.
-    @State private var source: Chromium.Source?
+    @State private var source: ImportSource?
     @State private var wantsPasswords = true
     @State private var wantsHistory = true
     @State private var wantsBookmarks = true
@@ -25,6 +25,8 @@ struct WelcomePanel: View {
     // The default browser.
     @State private var isDefault = Links.isDefault
     @State private var asked = false
+
+    private var importsPasswords: Bool { (source ?? ImportSource.installed().first)?.importsPasswords ?? false }
 
     private let pages = 4
 
@@ -80,11 +82,15 @@ struct WelcomePanel: View {
         VStack(alignment: .leading, spacing: 22) {
             heading("Bring things over.", "Passwords go into your keychain, bookmarks into the menu, and history means the address field already knows where you go. Nothing in the other browser changes.")
 
-            let sources = Chromium.installed()
+            let sources = ImportSource.installed()
+            let unreadable = Chromium.unreadable()
             if sources.isEmpty {
-                Text("No other browser found on this Mac — nothing to bring.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.faint)
+                if unreadable.isEmpty {
+                    Text("No other browser found on this Mac — nothing to bring.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     if sources.count > 1 {
@@ -97,14 +103,19 @@ struct WelcomePanel: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Palette.muted)
                     }
-                    Choice("Passwords", "macOS will ask once for that browser's keychain key", on: $wantsPasswords)
+                    if importsPasswords {
+                        Choice("Passwords", "macOS will ask once for that browser's keychain key", on: $wantsPasswords)
+                    } else {
+                        Text("Passwords from \((source ?? sources[0]).name) aren't supported yet.")
+                            .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                    }
                     Choice("Bookmarks", "Folders and all, behind the bookmark button", on: $wantsBookmarks)
                     Choice("History", "The last few thousand places, for finishing addresses", on: $wantsHistory)
                 }
 
                 HStack(spacing: 12) {
                     Big(bringing ? "Bringing…" : "Bring them in", filled: true) { bringAll() }
-                        .disabled(bringing || brought != nil || !(wantsPasswords || wantsHistory || wantsBookmarks))
+                        .disabled(bringing || brought != nil || !((importsPasswords && wantsPasswords) || wantsHistory || wantsBookmarks))
                     if bringing { Ring(size: 10) }
                     if let brought {
                         Text(brought)
@@ -115,6 +126,17 @@ struct WelcomePanel: View {
                 }
                 .animation(Motion.settle, value: brought)
             }
+
+            if !unreadable.isEmpty {
+                Text(unreadable.map(\.message).joined(separator: "\n"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.faint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Safari, a browser on another Mac, one Search can't read: what
+            // it exported, bookmarks, passwords or Safari's own ZIP.
+            Pill("From a file another browser exported…") { browser.importFile() }
         }
     }
 
@@ -175,7 +197,11 @@ struct WelcomePanel: View {
                 Key("⌘K", "Every open tab, by name.")
                 Key("⌘,", "Settings, including passwords and updates.")
                 Key("⌃1", "Spaces: separate tabs and sign-ins. Turn them on in Settings › Tabs.")
+                Key("⌥⌘N", "Split a page in two; ⌃⌘← and ⌃⌘→ go from one page to the other. Turn Split View on in Settings › Tabs.")
                 Key("⌘O", "Links from other apps can open in a small window. Settings › General.")
+                if AI.shipped {
+                    Key("⌘,", "AI summaries and questions about a page — off until you turn it on in Settings › AI.")
+                }
             }
         }
     }
@@ -215,28 +241,27 @@ struct WelcomePanel: View {
     // MARK: - doing
 
     private func bringAll() {
-        guard let source = source ?? Chromium.installed().first else { return }
+        guard let source = source ?? ImportSource.installed().first else { return }
+        // The profile used most recently, without asking: the sheet in
+        // Settings › Passwords is where another is chosen.
+        let profile = source.usual
         bringing = true
         var lines: [String] = []
         let group = DispatchGroup()
-        if wantsPasswords {
+        if wantsPasswords && source.importsPasswords {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
-                let outcome = Result { try Chromium.read(source) }
+                let outcome = Result { try source.read(profile: profile) }
                 DispatchQueue.main.async {
                     switch outcome {
                     case .success(let found):
-                        var kept = 0
-                        for login in found.logins
-                        where Vault.save(host: login.host, user: login.user, password: login.password, used: login.used, clear: login.clear) {
-                            kept += 1
-                        }
-                        var never = Vault.never
-                        found.never.forEach { never.insert($0) }
-                        Vault.never = never
+                        let kept = browser.keep(found)
+                        ImportRecords.note(source.name, passwords: kept)
                         lines.append("\(kept) passwords")
                     case .failure(Chromium.Trouble.noPassphrase):
                         lines.append("passwords: macOS didn't hand over the key — allow it and try again")
+                    case .failure(Mozilla.Trouble.primaryPassword):
+                        lines.append("passwords: \(source.name) has a primary password — export them from it and bring in the CSV")
                     case .failure:
                         lines.append("passwords: nothing readable")
                     }
@@ -245,11 +270,11 @@ struct WelcomePanel: View {
             }
         }
         if wantsBookmarks {
-            lines.append("\(browser.takeBookmarks(from: source)) bookmarks")
+            lines.append("\(browser.takeBookmarks(from: source, profile: profile).added) bookmarks")
         }
         if wantsHistory {
             group.enter()
-            browser.takePlaces(from: source) { count in
+            browser.takePlaces(from: source, profile: profile) { count in
                 lines.append("\(count) places")
                 group.leave()
             }

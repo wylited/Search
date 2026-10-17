@@ -6,10 +6,11 @@ import SwiftUI
 // The site card: what a click on the tab you are on shows under its address,
 // in the column and in the bar across the top alike — whether the connection
 // is private, and the few things that belong to the page (copy its address,
-// print it, its zoom). Right-click › Site Information… opens the same. It
-// goes as soon as you type, when the address is left, or when one of its
-// lines is used. From #56, whose bar it came with; the bar itself stayed out,
-// since Search has the column or the strip, never a second row over the page.
+// print it, its zoom, whether it may play sound by itself, whether its videos
+// float out). Right-click › Site Information… opens the same. It goes as soon
+// as you type, when the address is left, or when one of its lines is used.
+// From #56, whose bar it came with; the bar itself stayed out, since Search
+// has the column or the strip, never a second row over the page.
 
 /// The card's own small window, under the tab's address. It never takes the
 /// keys: the address stays in the tab being edited, the caret where it was,
@@ -62,7 +63,7 @@ enum SiteCardPanel {
             guard original != nil, browser.editingTab == tab.id, browser.tabDraft == original else { return }
             // The field with the caret in it is the one on screen; failing
             // that, the latest one made.
-            let focused = (Links.window?.firstResponder as? NSTextView)?.delegate as? NSTextField
+            let focused = ((browser.window ?? Links.window)?.firstResponder as? NSTextView)?.delegate as? NSTextField
             guard let field = focused ?? anchor, field.window != nil else {
                 if tries < 15 { place(tab, browser, tries: tries + 1) }
                 return
@@ -90,6 +91,10 @@ enum SiteCardPanel {
         glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = MenuMetrics.edge.cgColor
+        // The material behind the window ignores the layer's corners: a pale
+        // square showed past each rounded one, before macOS 26 and on it too.
+        // A mask rounds the material, and the window's shadow with it.
+        glass.maskImage = Self.rounded(MenuMetrics.corner)
         host.frame = glass.bounds
         host.autoresizingMask = [.width, .height]
         glass.addSubview(host)
@@ -101,20 +106,29 @@ enum SiteCardPanel {
         panel.hasShadow = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = true
-        // Under the address, lined up with the tab's own edge.
+        // Under the address, lined up with the tab's own edge — or over it,
+        // for a tab too near the bottom of the screen to have the room. Only
+        // ever beside the field: pushed up onto it, the card covered the
+        // address being edited, and what was typed there with it.
         let spot = window.convertToScreen(field.convert(field.bounds, to: nil))
         var origin = NSPoint(x: spot.minX - 12, y: spot.minY - 12 - size.height)
+        var above = false
         if let screen = window.screen?.visibleFrame {
             origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
-            origin.y = max(origin.y, screen.minY + 8)
+            if origin.y < screen.minY + 8 {
+                above = true
+                origin.y = min(spot.maxY + 12, screen.maxY - size.height - 8)
+            }
         }
         panel.setFrameOrigin(origin)
         window.addChildWindow(panel, ordered: .above)
-        // Its height follows the card: one step in on the connection is taller.
+        // Its size follows the card, keeping the edge nearest the address
+        // where it is.
         host.onResize = { [weak panel] fitted in
-            guard let panel, fitted.height > 0 else { return }
+            guard let panel, fitted.width > 0, fitted.height > 0,
+                  panel.frame.size != fitted else { return }
             var frame = panel.frame
-            frame.origin.y += frame.height - fitted.height
+            if !above { frame.origin.y += frame.height - fitted.height }
             frame.size = fitted
             panel.setFrame(frame, display: true)
         }
@@ -122,6 +136,19 @@ enum SiteCardPanel {
         resign = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { SiteCardPanel.hide() }
         }
+    }
+
+    /// A rounded rectangle that stretches to any size, its corners kept.
+    private static func rounded(_ corner: CGFloat) -> NSImage {
+        let side = corner * 2 + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: corner, left: corner, bottom: corner, right: corner)
+        image.resizingMode = .stretch
+        return image
     }
 
     static func hide() {
@@ -143,10 +170,14 @@ enum SiteCardPanel {
     private final class FirstClick: NSHostingView<AnyView> {
         var onResize: ((NSSize) -> Void)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func invalidateIntrinsicContentSize() {
-            super.invalidateIntrinsicContentSize()
+        override func layout() {
+            super.layout()
+            // SwiftUI can lay out a different card without invalidating the
+            // host's intrinsic size. Measure after layout and resize outside it.
             let fitted = fittingSize
-            DispatchQueue.main.async { [weak self] in self?.onResize?(fitted) }
+            let size = NSSize(width: ceil(fitted.width), height: ceil(fitted.height))
+            guard size != frame.size else { return }
+            DispatchQueue.main.async { [weak self] in self?.onResize?(size) }
         }
     }
 }
@@ -202,7 +233,7 @@ struct SiteCard: View {
 
     private var front: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let url = tab.address {
+            if let url = tab.pageAddress {
                 Header(title: SiteCard.site(url))
             }
             if let safety {
@@ -212,12 +243,46 @@ struct SiteCard: View {
             Separator()
             Row("Print…", keys: "⌘P") { after { browser.printPage() } }
             zoom
+            sound
+            grounded
+            darken
+        }
+    }
+
+    /// Whether the site's videos float out on their own (see Grounded).
+    /// Only on a site they would float from, with one of Settings › General's
+    /// Float the video switches on, and not in a private tab.
+    @ViewBuilder private var grounded: some View {
+        if !tab.shy, browser.prefs.floatsOnLeave || browser.prefs.floatsAway,
+           let url = tab.pageAddress, ["http", "https"].contains(url.scheme?.lowercased()),
+           Players.knows(url), let host = url.host() {
+            Ground(host: host)
+        }
+    }
+
+    /// Whether Search darkens the site (see Dusk.swift), a switch like the
+    /// sound's. Only while dark pages are on and doing something: not
+    /// paused, and the frame dark. It takes effect on the page at once.
+    @ViewBuilder private var darken: some View {
+        if browser.canDusk(tab) {
+            Darken(on: Binding(get: { tab.dusked }, set: { browser.dusk($0, tab) }))
+        }
+    }
+
+    /// Whether the site may play sound by itself (see Autoplay), a switch at
+    /// the end of its line. Not in a private tab, which remembers nothing,
+    /// nor with Settings › Videos wait for a click on, which lets no site.
+    @ViewBuilder private var sound: some View {
+        if !tab.shy, !Store.settings.bool(forKey: Preferences.waitsKey),
+           let url = tab.pageAddress, ["http", "https"].contains(url.scheme?.lowercased()),
+           let host = url.host() {
+            Sound(host: host)
         }
     }
 
     /// The page's size, remembered for the site (see Tab.rememberZoom), as a
     /// menu puts a control on one of its lines: the name, and the steps at
-    /// its end. The number puts it back to 100%.
+    /// its end. The number puts it back to the size every site starts at.
     private var zoom: some View {
         HStack(spacing: 0) {
             Text("Zoom")
@@ -242,11 +307,100 @@ struct SiteCard: View {
         .frame(height: MenuMetrics.row)
     }
 
+    /// The line itself. WebKit takes it as a page loads, so a page already
+    /// open stays as it came, and the line says so once flipped.
+    private struct Sound: View {
+        let host: String
+        private let was: Bool
+        @State private var on: Bool
+
+        init(host: String) {
+            self.host = host
+            was = Autoplay.allowed(host)
+            _on = State(initialValue: was)
+        }
+
+        var body: some View {
+            HStack(spacing: 0) {
+                Text("Play Sound by Itself")
+                    .font(MenuMetrics.font)
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize()
+                Spacer(minLength: 24)
+                if on != was {
+                    Text("from the next page")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .fixedSize()
+                        .padding(.trailing, 8)
+                }
+                Switch(on: $on)
+            }
+            .padding(.leading, MenuMetrics.text)
+            .padding(.trailing, MenuMetrics.trailing)
+            .frame(height: MenuMetrics.row)
+            .onChange(of: on) { _, value in Autoplay.set(value, for: host) }
+        }
+    }
+
+    /// Its line. Asked each time a video would float, so it holds at once,
+    /// for the page already open too.
+    private struct Ground: View {
+        let host: String
+        @State private var on: Bool
+
+        init(host: String) {
+            self.host = host
+            _on = State(initialValue: Grounded.holds(host))
+        }
+
+        var body: some View {
+            HStack(spacing: 0) {
+                Text("Don't Float Videos Here")
+                    .font(MenuMetrics.font)
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize()
+                Spacer(minLength: 24)
+                Switch(on: $on)
+            }
+            .padding(.leading, MenuMetrics.text)
+            .padding(.trailing, MenuMetrics.trailing)
+            .frame(height: MenuMetrics.row)
+            .onChange(of: on) { _, value in Grounded.set(value, for: host) }
+        }
+    }
+
+    private struct Darken: View {
+        @Binding var on: Bool
+
+        var body: some View {
+            HStack(spacing: 0) {
+                Text("Darken This Site")
+                    .font(MenuMetrics.font)
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize()
+                Spacer(minLength: 24)
+                // The key as it is now: Settings › Shortcuts can move it.
+                if let keys = ShortcutStore.shared.key(for: "view.dusk")?.display {
+                    Text(keys)
+                        .font(MenuMetrics.font)
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .fixedSize()
+                        .padding(.trailing, 8)
+                }
+                Switch(on: $on)
+            }
+            .padding(.leading, MenuMetrics.text)
+            .padding(.trailing, MenuMetrics.trailing)
+            .frame(height: MenuMetrics.row)
+        }
+    }
+
     // MARK: - one step in
 
     private func security(_ safety: Safety) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let url = tab.address {
+            if let url = tab.pageAddress {
                 Header(title: SiteCard.site(url))
             }
             Text(safety.title)
@@ -288,7 +442,7 @@ struct SiteCard: View {
     /// Asked when the card opens: a page that pulls in something over plain
     /// http after that is not worth a card that changes under you.
     private var safety: Safety? {
-        switch tab.address?.scheme {
+        switch tab.pageAddress?.scheme {
         case "https":
             let trust = tab.built?.serverTrust
             // Only a certificate this Mac refused and you let through anyway

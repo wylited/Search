@@ -16,22 +16,71 @@ import WebKit
 // with ⌘W), a tab playing sound, on a call, sending a download, holding its
 // video out in the little window, or holding something typed and not sent.
 //
-// When macOS says memory is short, the half hour shrinks: to five minutes on
-// a warning, to nothing when it is critical.
+// Half an hour is Normal. Settings › Tabs › How soon tabs sleep makes it
+// two hours (Later) or ten minutes (Sooner).
+//
+// When macOS says memory is short, the wait shrinks, whatever was chosen: to
+// five minutes on a warning, to nothing when it is critical.
 
-extension Browser {
-    /// How long a tab has to go without being looked at. Half an hour, or
-    /// `sleep.after` in seconds — for the bench and the measurements.
-    static var sleepAfter: TimeInterval {
-        let set = Store.settings.double(forKey: "sleep.after")
-        return set > 0 ? set : 30 * 60
+/// How soon tabs sleep, as chosen in Settings. Three levels rather than
+/// numbers: what someone decides is how much a waking tab bothers them, not
+/// how many minutes.
+enum SleepPace: String, CaseIterable, Identifiable {
+    case later, normal, sooner
+
+    nonisolated static let key = "tabs.sleep.pace"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .later: return "Later"
+        case .normal: return "Normal"
+        case .sooner: return "Sooner"
+        }
     }
 
-    /// Started once, at launch.
+    /// Away this long, a tab sleeps.
+    var wait: TimeInterval {
+        switch self {
+        case .later: return 2 * 60 * 60
+        case .normal: return 30 * 60
+        case .sooner: return 10 * 60
+        }
+    }
+
+    /// What the line in Settings says under the choice.
+    var detail: String {
+        switch self {
+        case .later: return "After two hours away."
+        case .normal: return "After half an hour away."
+        case .sooner: return "After ten minutes away."
+        }
+    }
+
+    /// The one chosen, Normal until someone chooses.
+    nonisolated static var chosen: SleepPace {
+        Store.settings.string(forKey: key).flatMap(SleepPace.init) ?? .normal
+    }
+}
+
+extension Browser {
+    /// How long a tab has to go without being looked at: the chosen pace's
+    /// wait, or `sleep.after` in seconds — for the bench and the measurements.
+    static var sleepAfter: TimeInterval {
+        let set = Store.settings.double(forKey: "sleep.after")
+        return set > 0 ? set : SleepPace.chosen.wait
+    }
+
+    /// Started once, at launch. The same look closes the tabs left alone
+    /// longest, when tabs close themselves (see Closing.swift).
     func watchForSleep() {
         let every = min(60, max(5, Browser.sleepAfter / 4))
         let timer = Timer(timeInterval: every, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sleepIdle() }
+            MainActor.assumeIsolated {
+                self?.sleepIdle()
+                self?.closeLeftAlone()
+            }
         }
         timer.tolerance = every / 4
         RunLoop.main.add(timer, forMode: .common)
@@ -64,19 +113,37 @@ extension Browser {
     /// Why a tab has to stay awake — nil when nothing keeps it. The clock is
     /// the caller's business; this is everything else.
     func awake(because tab: Tab) -> String? {
-        if tab.id == activeID { return "on screen" }
+        if visibleTabIDs.contains(tab.id) { return "on screen" }
         if tab.pin != nil { return "pinned" }
         if tab.bench { return "a bench tab" }
         if tab.isBlank { return "blank" }
         if tab.asleep { return "already asleep" }
-        guard let web = tab.built else { return "no page" }
+        guard tab.built != nil else { return "no page" }
         if tab.loading { return "still loading" }
+        return busy(tab)
+    }
+
+    /// What the page is in the middle of that letting it go would cut off:
+    /// the part of staying awake that closing a tab asks too (Closing.swift).
+    func busy(_ tab: Tab) -> String? {
         if tab.noisy { return "playing sound" }
         if tab.floating || floating == tab.id { return "its video is out" }
-        if web.cameraCaptureState != .none || web.microphoneCaptureState != .none { return "on a call" }
-        if downloading.contains(where: { $0.webView === web }) { return "downloading" }
+        if let web = tab.built {
+            if web.cameraCaptureState != .none || web.microphoneCaptureState != .none { return "on a call" }
+            if #available(macOS 15.4, *), ExtensionCapture.screen(web) { return "recording the screen" }
+            if downloading.contains(where: { $0.webView === web }) { return "downloading" }
+        }
+        if heldDialogs[tab.id]?.isEmpty == false || paneQuestions.contains(where: { $0.tab == tab.id }) {
+            return "a question waiting"
+        }
         // A sign-in window hands its answer back to the page that opened it.
-        if active?.opener == tab.id { return "the page on screen came from it" }
+        if let pair = activeSplit {
+            if tabs.contains(where: { pair.contains($0.id) && $0.opener == tab.id }) {
+                return "the page on screen came from it"
+            }
+        } else if active?.opener == tab.id {
+            return "the page on screen came from it"
+        }
         return nil
     }
 

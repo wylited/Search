@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import WebKit
 
 // Two fingers sideways means back, or forward.
@@ -10,12 +10,29 @@ import WebKit
 // slips out again. Nothing slides, nothing is kept in memory to slide.
 //
 // The one hard question is whether a sideways swipe belongs to the page — a
-// carousel, a wide table, a map — or is free to mean something. The page is
-// asked, on every sideways wheel event, whether anything under the pointer
-// could scroll that way. The answer arrives a frame or two after the gesture
-// starts, which is before there is anything to show.
+// carousel, a wide table, a map, a canvas — or is free to mean something. The
+// page is asked, on every sideways wheel event, whether anything under the
+// pointer could scroll that way, or whether the page took the event for
+// itself. The answer arrives a frame or two after the gesture starts, which
+// is before there is anything to show.
 
 enum Swipe {
+    /// Whether a sideways scroll may mean back or forward: the Mac's own
+    /// Swipe between pages, in System Settings › Trackpad and › Mouse, the
+    /// one Safari follows. Search draws its own swipe, with WebKit's turned
+    /// off, so it has to ask: a one-finger Magic Mouse scroll swiped with the
+    /// setting off, taking a Google Sheet's sideways scroll for a way back
+    /// (#464). The Mac answers for the device of the event being handled —
+    /// the Mouse's switch for a mouse, the Trackpad's for a trackpad — so it
+    /// is asked in scrollWheel, for that event, and never ahead of time or
+    /// kept. A test run stands in for the setting (`ui swipepages`), since
+    /// the Mac's own is the person's, not a test's.
+    @MainActor static var followsTheMac: Bool {
+        testing ?? NSEvent.isSwipeTrackingFromScrollEventsEnabled
+    }
+    /// Set only by a test run (see Bench), never by the browser people use.
+    @MainActor static var testing: Bool?
+
     /// No rubber-banding. Pulling past the top of a page showed a band of
     /// blank ground above it, and nobody who came from Chrome read that as
     /// anything but a fault. WebKit lets a view turn off the bounce along
@@ -78,12 +95,21 @@ enum Swipe {
         return false;
       }
 
-      window.addEventListener('wheel', function (e) {
-        if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
-        var t = taken(e), now = Date.now();
+      function say(t) {
+        var now = Date.now();
         if (t === was && now - said < 100) return;
         was = t; said = now;
         window.webkit.messageHandlers.officeScroll.postMessage({ side: t ? 'taken' : 'free' });
+      }
+
+      window.addEventListener('wheel', function (e) {
+        if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+        if (taken(e)) return say(true);
+        // A whiteboard or a map pans with its own wheel handler and nothing
+        // under it has overflow to scroll. Its preventDefault is its claim,
+        // as Safari and Chrome read it; it can only be seen once every
+        // handler has run, and this one runs first.
+        setTimeout(function () { say(e.defaultPrevented); }, 0);
       }, { passive: true, capture: true });
     })();
     """
@@ -99,4 +125,17 @@ struct Pull: Equatable {
     var armed: Bool
     /// Let go while armed: the page is on its way, and the disc leaves.
     var going: Bool
+    /// Held once armed: the pages that way, top to bottom, in place of the
+    /// disc, and the one letting go would open (see PageView.openList).
+    var stops: [Stop]? = nil
+    var picked = 0
+    /// Going back from the first page, where back means leaving: the small
+    /// window closes rather than the page changing (see PageView.leave).
+    var leaves = false
+}
+
+/// A page in the list a held swipe shows.
+struct Stop: Equatable {
+    var title: String
+    var url: URL
 }

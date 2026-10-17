@@ -9,12 +9,22 @@
 #                                if there is one in the keychain
 #   ./build.sh release ship    + both notarised, the DMG stapled
 #
+#   SEARCH_ARCH=x86_64 ./build.sh release ship
+#                              the same for Intel Macs, into build/intel/
+#
 # Same shape as the one next door: SwiftPM builds the executable, and a macOS
 # app bundle is just a folder with a plist and the binary in the right place.
 #
 # The three files keep the same names from release to release, so the site
 # links to them once and the updater reads one address forever. ./publish.sh
 # copies them into the site.
+#
+# Two builds from 1.0.5, each for one kind of Mac: Apple Silicon, in build/,
+# and Intel, in build/intel/, served from the site's search/intel/ folder
+# with an appcast of its own. A single universal app would have weighed
+# twice as much for everyone (10.9 MB of binary instead of 5.4). The app's
+# updater reads the feed for the chip it was built for (Updater.feed).
+# SEARCH_ARCH picks the chip; without it, the Mac's own.
 #
 # "dmg" lays the disk image's window out with dmgbuild, installed into .build
 # on first use (Python 3 and a network, once).
@@ -36,7 +46,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 CONFIG="${1:-release}"
 STEP="${2:-app}"
-APP="build/Search.app"
+ARCH="${SEARCH_ARCH:-$(uname -m)}"
+case "$ARCH" in
+  arm64) OUT="build"; SUBFOLDER="" ;;
+  x86_64) OUT="build/intel"; SUBFOLDER="/intel" ;;
+  *) echo "SEARCH_ARCH is arm64 or x86_64, not “$ARCH”" >&2; exit 1 ;;
+esac
+APP="$OUT/Search.app"
 NAME="Search"
 VERSION="$(tr -d '[:space:]' < VERSION)"
 # A build number that only ever goes up, so the updater can tell newer from
@@ -46,12 +62,33 @@ BUILD="$(date +%Y%m%d%H%M)"
 # older Mac is not handed a build it can't open.
 MINIMUM="14.0"
 
-swift build -c "$CONFIG"
-BINARY=".build/$CONFIG/Search"
+# -Osize for a release: 14% less binary (5.39 → 4.65 MB) at the same speed —
+# launch 337 against 338 ms, a scroll frame 0.26 against 0.25 ms, a key typed
+# 0.41 ms either way, measured interleaved on 1.0.4 (27 Sep 2026).
+SWIFTFLAGS=(-c "$CONFIG" --arch "$ARCH")
+[ "$CONFIG" = "release" ] && SWIFTFLAGS+=(-Xswiftc -Osize)
+swift build "${SWIFTFLAGS[@]}"
+BINARY="$(swift build "${SWIFTFLAGS[@]}" --show-bin-path)/Search"
+[ "$(lipo -archs "$BINARY")" = "$ARCH" ] || { echo "$BINARY is not a $ARCH binary" >&2; exit 1; }
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$NAME"
+# The binary says which SDK it was built with, and AppKit draws the app the
+# way that SDK's macOS drew it: built with the macOS 27 SDK, a Mac on 27 gets
+# 27's window buttons and controls; said to be built with an older one, it
+# gets that one's. Swift Build, SwiftPM's default since Xcode 27, writes the
+# oldest macOS the app runs on in both places (minos 14.0, sdk 14.0 — the
+# native build system wrote sdk 27.0 from the same sources), and the app came
+# out in macOS 14's looks on every Mac. The SDK it really was built with is
+# put back; the oldest macOS stays as it is.
+SDK="$(xcrun --sdk macosx --show-sdk-version)"
+vtool -set-build-version macos "$MINIMUM" "$SDK" -replace \
+  -output "$APP/Contents/MacOS/$NAME.sdk" "$APP/Contents/MacOS/$NAME"
+mv "$APP/Contents/MacOS/$NAME.sdk" "$APP/Contents/MacOS/$NAME"
+# The AppleScript dictionary (Scripting.swift): read-only, tabs' addresses
+# and titles. The plist below points to it.
+cp Search.sdef "$APP/Contents/Resources/"
 
 # Symbols stay out of the app. The linker leaves every function's name and a
 # map back to the source in the binary — 15,000 entries, more than half of
@@ -68,10 +105,38 @@ fi
 # The icon, drawn fresh each time — it is thirty lines of Swift, not an asset
 # to keep in step with anything.
 ICONSET="build/AppIcon.iconset"
-rm -rf "$ICONSET"
-swift Icon/icon.swift "$ICONSET" > /dev/null
+ICONDOC="build/AppIcon.icon"
+rm -rf "$ICONSET" "$ICONDOC"
+swift Icon/icon.swift "$ICONSET" "$ICONDOC" > /dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
+# macOS 26's Dark, Clear and Tinted Dock styles read the icon from an asset
+# catalog compiled from the Icon Composer document; without one the Dock
+# darkens the flat image and the mark goes black on black (#337). actool
+# comes with Xcode 26 — with anything older, or only the command-line tools,
+# the app keeps the .icns alone, as before. Only Assets.car is kept, not
+# actool's own .icns: the one above goes on being the disk image's icon and
+# the fallback. (macOS 14 and 15 show the flat pictures actool puts in
+# Assets.car, drawn from the same document: the same mark, to within a
+# pixel, on a plate with Apple's own corners.) --optimization space keeps
+# those pictures zipped rather than lzfse'd: 666 KB of catalog instead of
+# 800, every style still in it.
+ICONNAME=""
+ICONCAR="build/AppIcon.car"
+rm -rf "$ICONCAR"
+mkdir -p "$ICONCAR"
+# Full paths: actool hands the document to a helper that runs elsewhere, and
+# with "build/…" it finds nothing ("Icon export exited with status 255").
+if xcrun actool "$PWD/$ICONDOC" --compile "$PWD/$ICONCAR" --platform macosx \
+     --minimum-deployment-target "$MINIMUM" --app-icon AppIcon --optimization space \
+     --output-partial-info-plist "$PWD/$ICONCAR/partial.plist" > /dev/null 2>&1 \
+   && [ -f "$ICONCAR/Assets.car" ]; then
+  cp "$ICONCAR/Assets.car" "$APP/Contents/Resources/Assets.car"
+  ICONNAME="<key>CFBundleIconName</key><string>AppIcon</string>"
+else
+  echo "note: actool from Xcode 26 didn't compile the icon — no Dark or Tinted style this time" >&2
+fi
+rm -rf "$ICONCAR" "$ICONDOC"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -86,10 +151,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$BUILD</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  $ICONNAME
   <key>LSMinimumSystemVersion</key><string>$MINIMUM</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHumanReadableCopyright</key><string>© Office Commun · Search</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleScriptEnabled</key><true/>
+  <key>OSAScriptingDefinition</key><string>Search.sdef</string>
   <!-- Owning http and https is what sends a link clicked in Mail here.
        Appearing in Desktop & Dock → Default web browser also needs the
        XHTML document type below. -->
@@ -118,6 +186,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>LSItemContentTypes</key>
       <array><string>public.xhtml</string></array>
     </dict>
+    <!-- What a browser shows besides pages, listed under the Finder's Open
+         With (#524): a PDF, a picture, plain text (code and logs conform to
+         it), JSON. Alternate, so Search is offered there and never becomes
+         what opens them on a double-click. Pictures by name rather than
+         public.image, which takes in SVG: an SVG can carry a script, and
+         opened from the Finder it would run with its folder to read. -->
+    <dict>
+      <key>CFBundleTypeName</key><string>Document</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>com.adobe.pdf</string><string>public.png</string><string>public.jpeg</string><string>com.compuserve.gif</string><string>public.heic</string><string>org.webmproject.webp</string><string>public.tiff</string><string>public.plain-text</string><string>public.json</string></array>
+    </dict>
   </array>
   <!-- A browser goes wherever it is pointed, including at http sites and at
        whatever is running on localhost. -->
@@ -130,6 +211,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>Websites you visit can ask to use your camera. Search asks you the first time each site does and keeps your answer; Settings › Privacy forgets them.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Websites you visit can ask to use your microphone. Search asks you the first time each site does and keeps your answer; Settings › Privacy forgets them.</string>
+  <key>NSLocationUsageDescription</key>
+  <string>Websites you visit can ask for your location. Search asks you each time a site does, unless you choose Always allow for it; Settings › Privacy forgets those choices.</string>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>Files you download are saved to your Downloads folder.</string>
 </dict>
@@ -158,11 +241,14 @@ if [ -n "$IDENTITY" ]; then
     --sign "$IDENTITY" "$APP"
   echo "signed as: $IDENTITY"
 else
-  codesign --force --deep --sign - "$APP" 2>/dev/null || true
+  # A build that cannot sign at all is not a build: `|| true` here let one
+  # through as though it had finished, leaving a bundle that would not open.
+  # set -e stops it now, with codesign's own words above.
+  codesign --force --deep --sign - "$APP"
   [ "$STEP" != "app" ] && echo "no Developer ID certificate found — the DMG will only open on this Mac" >&2
 fi
 
-echo "built: $APP ($VERSION, build $BUILD)"
+echo "built: $APP ($VERSION, $ARCH, build $BUILD)"
 [ "$STEP" = "app" ] && exit 0
 
 # The disk image: the app beside a shortcut to Applications, on a white
@@ -171,7 +257,7 @@ echo "built: $APP ($VERSION, build $BUILD)"
 # layout file itself, so no Finder is scripted and no window opens mid-build.
 # dmgbuild is installed into .build the first time, and needs Python 3 and a
 # network then; without it the image is the plain one it always was.
-DMG="build/$NAME.dmg"
+DMG="$OUT/$NAME.dmg"
 ART="build/installer"
 rm -rf "$ART" "$DMG"
 DMGBUILD=".build/dmgbuild/bin/dmgbuild"
@@ -201,7 +287,7 @@ echo "packed: $DMG"
 
 # The ZIP is what the updater fetches, and its hash is what the updater
 # checks before opening it.
-ZIP="build/$NAME.zip"
+ZIP="$OUT/$NAME.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
@@ -209,26 +295,69 @@ echo "packed: $ZIP"
 
 # What the updater reads. The first paragraph of NOTES.md, with the two
 # characters JSON minds escaped, is the line under the version in Settings.
+# Written last — after notarisation has stapled its ticket to the DMG, which
+# changes it — so the DMG's hash is the one people download.
 BASE="${SEARCH_DOWNLOAD_URL:-https://officecommun.com/search}"
-BASE="${BASE%/}"
+BASE="${BASE%/}$SUBFOLDER"
 NOTES=""
 if [ -f NOTES.md ]; then
   NOTES="$(awk 'NF { printf "%s%s", (n++ ? " " : ""), $0; next } n { exit }' NOTES.md \
     | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
 fi
-cat > build/appcast.json <<JSON
+# The AI add-on's engine (engine.sh), when this release offers one: Apple
+# Silicon only for now. SEARCH_AI_ENGINE_VERSION names it — a number that
+# only goes up, as Search never takes a lower one — and the signed,
+# notarised binary in build/engine/ goes beside the other files, under ai/,
+# with its hash and size in the feed. The feed's own signature is what
+# vouches for them; Search then checks the engine's signature itself.
+AIBLOCK=""
+write_engine() {
+  local ENGINE="build/engine/search-ai-engine-arm64"
+  [ "$ARCH" = "arm64" ] && [ -n "${SEARCH_AI_ENGINE_VERSION:-}" ] || return 0
+  [[ "$SEARCH_AI_ENGINE_VERSION" =~ ^[0-9]+$ ]] || { echo "SEARCH_AI_ENGINE_VERSION is a whole number" >&2; exit 1; }
+  [ -f "$ENGINE" ] || { echo "$ENGINE is missing — ./engine.sh arm64 makes it" >&2; exit 1; }
+  codesign --verify --strict -R='anchor apple generic and identifier "com.officecommun.search.ai-engine" and certificate leaf[subject.OU] = "7BYKA895MC"' "$ENGINE" \
+    || { echo "$ENGINE isn't signed with the Developer ID as com.officecommun.search.ai-engine" >&2; exit 1; }
+  local FILE="search-ai-engine-arm64-$SEARCH_AI_ENGINE_VERSION"
+  mkdir -p "$OUT/ai"
+  cp "$ENGINE" "$OUT/ai/$FILE"
+  AIBLOCK=",
+  \"ai\": {\"engine\": {\"version\": $SEARCH_AI_ENGINE_VERSION, \"url\": \"$BASE/ai/$FILE\", \"sha256\": \"$(shasum -a 256 "$ENGINE" | cut -d' ' -f1)\", \"size\": $(stat -f%z "$ENGINE")}}"
+  echo "engine: $OUT/ai/$FILE"
+}
+write_appcast() {
+  local DMGSHA
+  DMGSHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+  write_engine
+  cat > "$OUT/appcast.json" <<JSON
 {
   "version": "$VERSION",
   "build": $BUILD,
   "url": "$BASE/$NAME.zip",
   "dmg": "$BASE/$NAME.dmg",
   "sha256": "$SHA",
+  "dmgSha256": "$DMGSHA",
   "notes": "$NOTES",
-  "minimumSystemVersion": "$MINIMUM"
+  "minimumSystemVersion": "$MINIMUM"$AIBLOCK
 }
 JSON
-echo "wrote: build/appcast.json ($VERSION, build $BUILD)"
-[ "$STEP" = "dmg" ] && exit 0
+  echo "wrote: $OUT/appcast.json ($VERSION, $ARCH, build $BUILD)"
+  # The same file, signed with the Developer ID that signs the app (codesign
+  # keeps the signature in the file's extended attributes, ditto carries them
+  # in the ZIP). Builds from 1.0.4 read only this one; older ones read the
+  # plain file beside it. No key of its own to keep, or to lose.
+  rm -f "$OUT/appcast.json.zip"
+  if [ -n "$IDENTITY" ]; then
+    local SIGNED
+    SIGNED="$(mktemp -d)"
+    cp "$OUT/appcast.json" "$SIGNED/appcast.json"
+    codesign --force --timestamp --sign "$IDENTITY" --identifier com.officecommun.search.appcast "$SIGNED/appcast.json"
+    ditto -c -k --sequesterRsrc "$SIGNED/appcast.json" "$OUT/appcast.json.zip"
+    rm -rf "$SIGNED"
+    echo "signed: $OUT/appcast.json.zip"
+  fi
+}
+if [ "$STEP" = "dmg" ]; then write_appcast; exit 0; fi
 
 # Notarisation: Apple looks both over. The ticket is stapled to the image,
 # so it opens on a Mac that has never seen this app and is offline; the ZIP
@@ -238,4 +367,5 @@ for FILE in "$DMG" "$ZIP"; do
   xcrun notarytool submit "$FILE" --keychain-profile "${SEARCH_NOTARY_PROFILE:-search}" --wait
 done
 xcrun stapler staple "$DMG"
-echo "shipped: $DMG, $ZIP and build/appcast.json — ./publish.sh <folder> puts them on the site"
+write_appcast
+echo "shipped: $DMG, $ZIP, $OUT/appcast.json and its signed ZIP — ./publish.sh <folder> puts them on the site"

@@ -22,14 +22,31 @@ final class Lights: NSObject {
     private static var kept: [ObjectIdentifier: Lights] = [:]
 
     /// Starts looking after a window's lights, once. `moved` hears each time
-    /// they have been put in place.
-    static func keep(_ window: NSWindow, moved: @escaping () -> Void) {
+    /// they have been put in place. Neither may hold the window: it is
+    /// handed to `centreX`, so that a window closed for good is freed.
+    static func keep(_ window: NSWindow, centreX: @escaping (NSWindow) -> CGFloat, moved: @escaping () -> Void) {
+        // A freed window's entry goes, and with it the one a new window at
+        // the same address would otherwise be taken for.
+        kept = kept.filter { $0.value.window != nil }
         guard kept[ObjectIdentifier(window)] == nil else { return }
-        kept[ObjectIdentifier(window)] = Lights(window, moved: moved)
+        kept[ObjectIdentifier(window)] = Lights(window, centreX: centreX, moved: moved)
+    }
+
+    static func refresh(_ window: NSWindow?) {
+        guard let window else { return }
+        kept[ObjectIdentifier(window)]?.place()
+    }
+
+    /// Puts the lights back only when something moved them. A page whose
+    /// title changes every second asks for this each time, so it only looks.
+    static func refreshIfMoved(_ window: NSWindow?) {
+        guard let window, let lights = kept[ObjectIdentifier(window)], lights.misplaced() else { return }
+        lights.place()
     }
 
     private weak var window: NSWindow?
     private let moved: () -> Void
+    private let centreX: (NSWindow) -> CGFloat
     private var placing = false
     /// AppKit's own spacing between the three, read once from its first
     /// layout and kept. Read again on every pass, it was caught while AppKit
@@ -39,8 +56,9 @@ final class Lights: NSObject {
     /// from the one before. Reproduced with ./bench resize, 23 Sep 2026.
     private let spacing: CGFloat
 
-    private init(_ window: NSWindow, moved: @escaping () -> Void) {
+    private init(_ window: NSWindow, centreX: @escaping (NSWindow) -> CGFloat, moved: @escaping () -> Void) {
         self.window = window
+        self.centreX = centreX
         self.moved = moved
         let row = [NSWindow.ButtonType.closeButton, .miniaturizeButton].compactMap { window.standardWindowButton($0) }
         let measured = row.count == 2 ? row[1].frame.minX - row[0].frame.minX : 0
@@ -70,6 +88,23 @@ final class Lights: NSObject {
         [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window?.standardWindowButton($0) }
     }
 
+    /// Whether `place` would move anything: the same arithmetic, changing nothing.
+    private func misplaced() -> Bool {
+        guard !placing, let window, !window.styleMask.contains(.fullScreen) else { return false }
+        let buttons = self.buttons
+        guard buttons.count == 3, let bar = buttons[0].superview, let container = bar.superview else { return false }
+        if container.frame.height != Metrics.strip || container.frame.maxY != window.frame.height { return true }
+        for (index, button) in buttons.enumerated() {
+            let size = button.frame.size
+            let origin = NSPoint(
+                x: centreX(window) - size.width / 2 + CGFloat(index) * spacing,
+                y: bar.bounds.height - Lights.centre.y - size.height / 2
+            )
+            if button.frame.origin != origin { return true }
+        }
+        return false
+    }
+
     @objc private func place() {
         // Full screen keeps its title bar in a window of its own, laid out by
         // macOS; it is left to it.
@@ -91,7 +126,7 @@ final class Lights: NSObject {
         for (index, button) in buttons.enumerated() {
             let size = button.frame.size
             let origin = NSPoint(
-                x: Lights.centre.x - size.width / 2 + CGFloat(index) * spacing,
+                x: centreX(window) - size.width / 2 + CGFloat(index) * spacing,
                 y: bar.bounds.height - Lights.centre.y - size.height / 2
             )
             if button.frame.origin != origin { button.setFrameOrigin(origin) }

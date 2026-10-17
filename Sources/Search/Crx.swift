@@ -37,6 +37,19 @@ enum Crx {
     /// browser that says it is older.
     static let chromeVersion = "140.0.0.0"
 
+    /// The id Chrome gives a folder loaded unpacked, from its real path:
+    /// native messaging hosts shipped for such a folder list this id. The
+    /// manifest's "key" is ignored, as nothing checks it and store keys are
+    /// public, so a folder could otherwise take any extension's id.
+    static func unpackedID(for folder: URL) -> String {
+        letters(Array(SHA256.hash(data: Data(realPath(of: folder).utf8)).prefix(16)))
+    }
+
+    /// Where a folder really is, every link on the way resolved.
+    static func realPath(of folder: URL) -> String {
+        realpath(folder.path, nil).map { real in defer { free(real) }; return String(cString: real) } ?? folder.standardizedFileURL.path
+    }
+
     /// Thirty-two letters from a to p, wherever they are — a bare id, a store
     /// link, an old chrome.google.com/webstore link.
     static func id(in text: String) -> String? {
@@ -46,6 +59,25 @@ enum Crx {
               let found = Range(match.range(at: 1), in: text)
         else { return nil }
         return text[found].lowercased()
+    }
+
+    /// The extension a store page is about: the id in its /detail/ path
+    /// and nowhere else — the listing the page shows is that one. Only on
+    /// the store itself, over https, with nothing before its host.
+    static func storeID(of url: URL) -> String? {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else { return nil }
+        let host = url.host()?.lowercased() ?? ""
+        let pattern: String
+        switch host {
+        case "chromewebstore.google.com": pattern = #"^/detail/(?:[^/]+/)?([a-p]{32})(?:/.*)?$"#
+        case "chrome.google.com": pattern = #"^/webstore/detail/(?:[^/]+/)?([a-p]{32})(?:/.*)?$"#
+        default: return nil
+        }
+        let path = url.path
+        guard let match = try? NSRegularExpression(pattern: pattern).firstMatch(in: path, range: NSRange(path.startIndex..., in: path)),
+              let found = Range(match.range(at: 1), in: path)
+        else { return nil }
+        return String(path[found])
     }
 
     static func downloadURL(for id: String) -> URL {

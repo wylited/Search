@@ -25,6 +25,23 @@ struct Login: Identifiable, Equatable, Hashable {
     var id: String { host + "\u{1}" + user }
 }
 
+/// One item as a list needs it: the site, the account, and when it was last
+/// used, without the secret. Reading a secret is one keychain call, and the
+/// list asks for one only when a password is shown or copied: a drawer of four
+/// hundred kept passwords would otherwise be four hundred calls before the
+/// panel could draw itself. Nothing that writes a password or fills one into a
+/// page takes this type, so a row cannot be handed on as though it held one.
+struct Kept: Identifiable, Equatable, Hashable {
+    var host: String
+    var user: String
+    /// When it was last used to sign in, if known. Newest first in lists.
+    var used: Date?
+    /// Kept from a page sent in the clear, over plain http. See `Login`.
+    var clear = false
+
+    var id: String { host + "\u{1}" + user }
+}
+
 enum Vault {
     /// What every item of ours is tagged with. A test run tags its own, so a
     /// password saved while trying something never sits among the real ones.
@@ -57,10 +74,11 @@ enum Vault {
         return (exact + wider).sorted { ($0.used ?? .distantPast) > ($1.used ?? .distantPast) }
     }
 
-    /// Everything this app holds, for the list. Read on demand and never kept
-    /// in a property.
-    static func all() -> [Login] {
-        rows(where: [:]).compactMap(login(from:))
+    /// Everything this app holds, as the list needs it: no secrets. Each one
+    /// is `secret(of:)`, a call of its own, and only when it is asked for.
+    /// Read on demand and never kept in a property.
+    static func all() -> [Kept] {
+        rows(where: [:]).compactMap(kept(from:))
             .sorted { $0.host == $1.host ? $0.user < $1.user : $0.host < $1.host }
     }
 
@@ -102,16 +120,46 @@ enum Vault {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func login(from row: [String: Any]) -> Login? {
-        guard let host = row[kSecAttrServer as String] as? String,
-              let user = row[kSecAttrAccount as String] as? String,
-              let password = secret(host: host, user: user)
-        else { return nil }
+    /// One item's secret, where a list holds only the item: read when a
+    /// password is shown or copied, and never as part of a list.
+    static func secret(of kept: Kept) -> String? { secret(host: kept.host, user: kept.user) }
+
+    /// What an item's attributes say beyond its name: when it was last used,
+    /// and whether it was kept from a page sent in the clear.
+    private static func noted(_ row: [String: Any]) -> (used: Date?, clear: Bool) {
         // The keychain has no "last used" of its own; it rides in the comment.
         let used = (row[kSecAttrComment as String] as? String)
             .flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
         let clear = (row[kSecAttrProtocol as String] as? String) == (kSecAttrProtocolHTTP as String)
+        return (used, clear)
+    }
+
+    /// One item with its secret, for the paths that hand a password over:
+    /// filling a sign-in in, and telling whether one is already kept.
+    private static func login(from row: [String: Any]) -> Login? {
+        let user = account(of: row)
+        guard let host = row[kSecAttrServer as String] as? String,
+              let password = secret(host: host, user: user)
+        else { return nil }
+        let (used, clear) = noted(row)
         return Login(host: host, user: user, password: password, used: used, clear: clear)
+    }
+
+    /// The account an item is kept under. A sign-in with a password box
+    /// alone — an access code, a dashboard's — is kept under no name, and
+    /// the keychain lists such an item with no account at all, not an
+    /// empty one: read as missing, it was saved and never offered again,
+    /// nor shown in Settings, nor forgotten.
+    private static func account(of row: [String: Any]) -> String {
+        row[kSecAttrAccount as String] as? String ?? ""
+    }
+
+    /// One item without its secret, for the list.
+    private static func kept(from row: [String: Any]) -> Kept? {
+        guard let host = row[kSecAttrServer as String] as? String else { return nil }
+        let user = account(of: row)
+        let (used, clear) = noted(row)
+        return Kept(host: host, user: user, used: used, clear: clear)
     }
 
     // MARK: - writing
@@ -156,13 +204,15 @@ enum Vault {
         save(host: login.host, user: login.user, password: login.password, used: Date(), clear: login.clear)
     }
 
-    static func forget(host: String, user: String) {
+    /// Whether the keychain let it go: Remove All… counts only those.
+    @discardableResult
+    static func forget(host: String, user: String) -> Bool {
         SecItemDelete([
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: host,
             kSecAttrAccount as String: user,
             kSecAttrLabel as String: label,
-        ] as CFDictionary)
+        ] as CFDictionary) == errSecSuccess
     }
 
     // MARK: - sites that asked not to be asked
@@ -181,7 +231,12 @@ enum Vault {
 
     /// A password is shown only to the person the Mac belongs to. Touch ID,
     /// the watch, or the account password — whatever the Mac itself takes.
-    static func prove(_ reason: String, _ done: @escaping (Bool) -> Void) {
+    @MainActor static func prove(_ reason: String, _ done: @escaping (Bool) -> Void) {
+        // A test run answers as it answers Ask.sure (`ui confirm on|off`).
+        if Store.testing, let yes = Ask.testing {
+            done(yes)
+            return
+        }
         let context = LAContext()
         var trouble: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &trouble) else {
@@ -206,7 +261,13 @@ enum Vault {
     static func host(of text: String) -> String {
         var value = text.trimmingCharacters(in: .whitespaces)
         if !value.contains("://") { value = "https://" + value }
-        guard let host = URL(string: value)?.host()?.lowercased() else { return "" }
+        // A website's, and nothing else: an Android app's login in an export
+        // (android://…@com.vendor.app/) names a package, which can read as a
+        // domain somebody else owns — com.vendor.app, .shopping… — and would
+        // be offered to them.
+        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host()?.lowercased()
+        else { return "" }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
@@ -246,16 +307,54 @@ enum Vault {
         return (kept, skipped)
     }
 
+    /// Called on the import worker. Parsing finishes before any keychain
+    /// writes; cancellation between writes preserves an exact partial count.
+    static func take(csv text: String, control: ImportFile.Control) -> (kept: Int, skipped: Int) {
+        guard !control.isCancelled else { return (0, 0) }
+        control.report(.init(message: "Reading password CSV…", completed: 0))
+        var rows = parse(csv: text, control: control)
+        guard !rows.isEmpty, !control.isCancelled else { return (0, 0) }
+        let header = rows.removeFirst().map { $0.lowercased() }
+        func column(_ names: [String]) -> Int? { header.firstIndex { names.contains($0) } }
+        guard let urlAt = column(["url", "login_uri", "website", "site"]),
+              let userAt = column(["username", "login_username", "user", "email"]),
+              let passAt = column(["password", "login_password"])
+        else { return (0, rows.count) }
+        var kept = 0, skipped = 0
+        control.report(.init(message: "Saving passwords…", completed: 0, total: rows.count))
+        for (index, row) in rows.enumerated() {
+            if control.isCancelled { break }
+            defer {
+                if (index + 1) % 25 == 0 || index + 1 == rows.count {
+                    control.report(.init(message: "Saving passwords…", completed: index + 1, total: rows.count))
+                }
+            }
+            guard row.count > max(urlAt, max(userAt, passAt)) else { skipped += 1; continue }
+            let host = self.host(of: row[urlAt])
+            let password = row[passAt]
+            guard !host.isEmpty, !password.isEmpty else { skipped += 1; continue }
+            let clear = row[urlAt].trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("http://")
+            save(host: host, user: row[userAt], password: password, clear: clear) ? (kept += 1) : (skipped += 1)
+        }
+        return (kept, skipped)
+    }
+
     /// Quoted fields, doubled quotes inside them, and newlines inside those —
     /// all three turn up in a real export.
-    private static func parse(csv text: String) -> [[String]] {
+    private static func parse(csv text: String, control: ImportFile.Control? = nil) -> [[String]] {
         var rows: [[String]] = []
         var row: [String] = []
         var field = ""
         var quoted = false
         var index = text.startIndex
+        var scanned = 0
 
         while index < text.endIndex {
+            scanned += 1
+            if scanned % 8192 == 0, let control {
+                if control.isCancelled { return [] }
+                control.report(.init(message: "Reading password CSV…", completed: scanned))
+            }
             let c = text[index]
             if quoted {
                 if c == "\"" {
@@ -285,6 +384,10 @@ enum Vault {
         }
         row.append(field)
         if row.contains(where: { !$0.isEmpty }) { rows.append(row) }
+        if let control {
+            if control.isCancelled { return [] }
+            control.report(.init(message: "Reading password CSV…", completed: scanned))
+        }
         return rows
     }
 }
